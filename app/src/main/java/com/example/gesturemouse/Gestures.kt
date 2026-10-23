@@ -1,5 +1,6 @@
 package com.example.gesturemouse
 
+import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.hypot
 import kotlin.math.max
@@ -27,6 +28,9 @@ object Cfg {
     // C 形手指彎曲角度範圍（度）
     const val C_BEND_MIN = 35f
     const val C_BEND_MAX = 120f
+
+    // 食指橫指：水平分量至少是垂直分量的幾倍（越小越容易觸發）
+    const val SIDE_RATIO = 1.6f
 }
 
 fun dist(a: Lm, b: Lm): Float = hypot(a.x - b.x, a.y - b.y)
@@ -36,6 +40,16 @@ fun extended(lm: Array<Lm>, tip: Int, pip: Int): Boolean =
     dist(lm[tip], lm[0]) > dist(lm[pip], lm[0]) * 1.15f
 
 fun handSize(lm: Array<Lm>): Float = max(dist(lm[0], lm[9]), 1e-6f)
+
+/**
+ * 食指橫著指（向左或向右）：食指根部→指尖的方向接近水平，而且手指夠長（不是縮起來的）。
+ * 只用在已經被判成「指向」的手上。
+ */
+fun isSidePoint(lm: Array<Lm>): Boolean {
+    val vx = lm[8].x - lm[5].x
+    val vy = lm[8].y - lm[5].y
+    return abs(vx) >= Cfg.SIDE_RATIO * abs(vy) && hypot(vx, vy) >= 0.55f * handSize(lm)
+}
 
 /** 比讚：四指收起、拇指朝上伸出。 */
 fun isThumbsUp(lm: Array<Lm>): Boolean {

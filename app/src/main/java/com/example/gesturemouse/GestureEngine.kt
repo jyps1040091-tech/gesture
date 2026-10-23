@@ -48,9 +48,8 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
         const val HOME_HOLD = 2.0         // 雙手握拳：回桌面
         const val LIKE_HOLD = 0.25        // 比讚：按住這麼久就噴出 👍 彈幕
         const val LIKE_COOLDOWN = 1.5     // 一直比讚的話，每隔這麼久再噴一次
-        const val SWIPE_WINDOW = 0.5      // 食指左右甩：要在這段時間內完成
-        const val SWIPE_DIST = 0.40f      // 橫向移動距離（占鏡頭畫面寬度的比例）；越小越容易觸發
-        const val SWIPE_COOLDOWN = 1.2
+        const val SIDE_HOLD = 0.5         // 食指橫指（向左或向右）：維持這麼久＝返回
+        const val SIDE_COOLDOWN = 1.2
         const val C_HOLD = 0.8            // C 形：開 Chrome
         const val C_COOLDOWN = 5.0
         const val SHOT_HOLD = 1.0         // 雙手 L 形取景框：撐住這麼久＝截圖
@@ -107,9 +106,10 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
     private var thumbSince: Double? = null
     private var lastLike = -100.0
 
-    // 食指左右甩 → 返回
-    private val swipeHist = ArrayDeque<Triple<Double, Float, Float>>()
-    private var lastSwipe = -100.0
+    // 食指橫指（向左 / 向右）→ 返回
+    private var sideSince: Double? = null
+    private var sideFired = false
+    private var lastSide = -100.0
 
     private var lastLabel = ""
 
@@ -138,7 +138,8 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
         pinchState = null
         scrollPrevY = null
         scrollAcc = 0f
-        swipeHist.clear()
+        sideSince = null
+        sideFired = false
         if (cursorVisible) {
             cursorVisible = false
             out.cursor(tgtX, tgtY, false, false)
@@ -156,6 +157,7 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
             gesture = c.gesture
             pinchState = c.pinch
         }
+        val sidePoint = gesture == Gesture.POINT && lm != null && isSidePoint(lm)
 
         // ---- 雙手：攤開 / 握拳 ----
         var kind: Pose? = null
@@ -261,6 +263,7 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
             val lab = when {
                 hands.isEmpty() -> "沒看到手"
                 hands.size >= 2 -> "雙手：" + (kind?.name ?: "-")
+                sidePoint -> "POINT 橫指"
                 else -> gesture.name
             }
             val full = (if (armed) "● " else "○ ") + lab
@@ -289,7 +292,8 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
             }
             // 游標移動：食指伸出、其他沒有特殊意義的手形，或拖曳中
             // （捏合 / 長按 / 捲動期間凍結位置，點擊才會點在捏下去的地方）
-            if (gesture == Gesture.POINT || gesture == Gesture.OTHER ||
+            // （食指橫指時也凍結，避免返回的過程中游標亂飄）
+            if ((gesture == Gesture.POINT && !sidePoint) || gesture == Gesture.OTHER ||
                 (gesture == Gesture.PINCH && dragging)
             ) {
                 tgtX = curX; tgtY = curY
@@ -297,27 +301,18 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
             }
             out.cursor(tgtX, tgtY, cursorVisible, gesture == Gesture.PINCH)
 
-            // 食指左右快速甩動（0.5 秒內橫向移動夠遠）→ 返回
-            if (gesture == Gesture.POINT) {
-                val sx = lm[5].x / frameW
-                val sy = lm[5].y / frameW  // 用同一個單位（畫面寬度）比橫向與縱向
-                swipeHist.addLast(Triple(now, sx, sy))
-                while (swipeHist.size > 1 && now - swipeHist.first().first > SWIPE_WINDOW) {
-                    swipeHist.removeFirst()
-                }
-                val first = swipeHist.first()
-                val dx = sx - first.second
-                val dy = sy - first.third
-                if (abs(dx) >= SWIPE_DIST && abs(dy) <= 0.6f * abs(dx) &&
-                    now - lastSwipe >= SWIPE_COOLDOWN
-                ) {
-                    lastSwipe = now
-                    swipeHist.clear()
+            // 食指橫著指（向左或向右）維持 0.5 秒 → 返回；要把手指轉回來再橫指才會再觸發
+            if (sidePoint) {
+                val s = sideSince ?: now.also { sideSince = it }
+                if (!sideFired && now - s >= SIDE_HOLD && now - lastSide >= SIDE_COOLDOWN) {
+                    sideFired = true
+                    lastSide = now
                     out.back()
                     out.hud(true, "返回")
                 }
             } else {
-                swipeHist.clear()
+                sideSince = null
+                sideFired = false
             }
 
             // 左鍵：快速捏合＝點擊，捏住不放＝拖曳
