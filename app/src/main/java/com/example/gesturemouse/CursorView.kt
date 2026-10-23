@@ -10,6 +10,7 @@ import android.view.Choreographer
 import android.view.View
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.sqrt
 
 /**
  * 全螢幕透明、觸控可穿透的游標層（電腦版 Overlay 的對應）。
@@ -52,6 +53,40 @@ class CursorView(context: Context) : View(context) {
         textAlign = Paint.Align.CENTER
     }
 
+    // ---- 👍 彈幕 ----
+    private class Particle(
+        var x: Float, var y: Float, var vx: Float, var vy: Float,
+        val size: Float, var delay: Float,
+    )
+
+    private val particles = ArrayList<Particle>()
+    private var gravity = 2000f
+    private val emojiPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+
+    /** 從螢幕底部往上噴出一堆 👍（和電腦版的彈幕一樣，是拋物線，會落回螢幕外）。 */
+    fun burst(count: Int = 30) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+        gravity = 1.4f * h
+        val sizes = floatArrayOf(28f, 36f, 46f, 60f)
+        repeat(count) {
+            val size = sizes[(Math.random() * sizes.size).toInt()] * dp
+            val peak = (0.35f + Math.random().toFloat() * 0.57f) * h  // 這顆要噴多高
+            particles.add(
+                Particle(
+                    x = (0.08f + Math.random().toFloat() * 0.84f) * w,
+                    y = h + size,
+                    vx = (Math.random().toFloat() * 2f - 1f) * 120f * dp,
+                    vy = -sqrt(2f * gravity * peak),
+                    size = size,
+                    delay = Math.random().toFloat() * 0.5f,  // 錯開 0.5 秒內陸續噴出
+                )
+            )
+        }
+        kick()
+    }
+
     private val frame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             val dt = if (lastNs == 0L) 0.016f else ((frameTimeNanos - lastNs) / 1e9f).coerceIn(0.001f, 0.1f)
@@ -59,10 +94,21 @@ class CursorView(context: Context) : View(context) {
             val a = 1f - exp(-dt / tau)
             px += (tx - px) * a
             py += (ty - py) * a
+            if (particles.isNotEmpty()) {
+                val it = particles.iterator()
+                while (it.hasNext()) {
+                    val p = it.next()
+                    if (p.delay > 0f) { p.delay -= dt; continue }
+                    p.vy += gravity * dt
+                    p.x += p.vx * dt
+                    p.y += p.vy * dt
+                    if (p.vy > 0f && p.y > height + p.size) it.remove()  // 掉出螢幕底部就移除
+                }
+            }
             invalidate()
             val hudOn = SystemClock.uptimeMillis() < hudUntil
             val moving = abs(tx - px) > 0.5f || abs(ty - py) > 0.5f
-            if (visibleCursor || hudOn || moving) {
+            if (visibleCursor || hudOn || moving || particles.isNotEmpty()) {
                 Choreographer.getInstance().postFrameCallback(this)
             } else {
                 running = false
@@ -119,6 +165,13 @@ class CursorView(context: Context) : View(context) {
         getLocationOnScreen(loc)  // 補償狀態列 / 瀏海造成的位移，讓座標等於螢幕絕對座標
         val ox = loc[0].toFloat()
         val oy = loc[1].toFloat()
+
+        // 👍 彈幕（畫在最底層，游標與提示都蓋在上面）
+        for (p in particles) {
+            if (p.delay > 0f) continue
+            emojiPaint.textSize = p.size
+            canvas.drawText("👍", p.x, p.y + p.size * 0.35f, emojiPaint)
+        }
 
         // 右上角小圓點：啟動中＝綠，停用＝灰
         fill.color = if (armed) 0xFF34C759.toInt() else 0x88999999.toInt()

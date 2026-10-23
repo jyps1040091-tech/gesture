@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.util.Log
 import android.view.ViewConfiguration
 import android.view.WindowManager
@@ -266,6 +267,27 @@ class GestureAccessibilityService : AccessibilityService(), GestureOutput {
                 try { startActivity(intent) } catch (e: Exception) { Log.e(TAG, "開啟瀏覽器失敗", e) }
             } catch (e: Exception) {
                 Log.e(TAG, "開啟 Chrome 失敗", e)
+            }
+        }
+    }
+
+    override fun burst() {
+        main.post { cursorView?.burst() }
+    }
+
+    override fun openCamera() {
+        main.post {
+            val flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            try {
+                // 直接開相機 App（不需要回傳結果）
+                startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA).addFlags(flags))
+            } catch (_: Exception) {
+                try {
+                    startActivity(Intent(MediaStore.ACTION_IMAGE_CAPTURE).addFlags(flags))
+                } catch (e: Exception) {
+                    Log.e(TAG, "開啟相機失敗", e)
+                    Toast.makeText(this, "找不到相機 App", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }

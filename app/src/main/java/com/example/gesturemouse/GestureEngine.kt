@@ -1,6 +1,9 @@
 package com.example.gesturemouse
 
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.max
 
 /** 引擎對外的輸出介面，由無障礙服務實作（點擊、拖曳、捲動、全域動作、游標）。 */
 interface GestureOutput {
@@ -17,6 +20,10 @@ interface GestureOutput {
     fun back()
     fun screenshot()
     fun openChrome()
+    /** 開啟系統相機 App。 */
+    fun openCamera()
+    /** 從螢幕底部噴出一堆 👍。 */
+    fun burst()
     fun hud(armed: Boolean, text: String)
     /** 左上角的即時手勢標籤（除錯用）；空字串＝隱藏。 */
     fun label(text: String)
@@ -39,17 +46,24 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
         const val RIGHT_CLICK_COOLDOWN = 0.5
         const val TOGGLE_HOLD = 1.0       // 雙手攤開：啟動 / 停用
         const val HOME_HOLD = 2.0         // 雙手握拳：回桌面
-        const val BACK_HOLD = 0.6         // 比讚：返回
-        const val BACK_COOLDOWN = 1.2
+        const val LIKE_HOLD = 0.25        // 比讚：按住這麼久就噴出 👍 彈幕
+        const val LIKE_COOLDOWN = 1.5     // 一直比讚的話，每隔這麼久再噴一次
+        const val SWIPE_WINDOW = 0.5      // 食指左右甩：要在這段時間內完成
+        const val SWIPE_DIST = 0.40f      // 橫向移動距離（占鏡頭畫面寬度的比例）；越小越容易觸發
+        const val SWIPE_COOLDOWN = 1.2
         const val C_HOLD = 0.8            // C 形：開 Chrome
         const val C_COOLDOWN = 5.0
-        const val SHOT_HOLD = 1.0         // 雙手 L 形取景框：截圖
+        const val SHOT_HOLD = 1.0         // 雙手 L 形取景框：撐住這麼久＝截圖
         const val SHOT_COOLDOWN = 3.0
+        const val CAMERA_WINDOW = 1.0     // 取景框成形後，這段時間內雙手合起來（咔嚓）＝開相機
+        const val CAMERA_CLOSE_RATIO = 0.55f  // 兩手轉角距離縮到最大距離的這個比例以下才算合起來
+        const val CAMERA_COOLDOWN = 3.0
+        const val FRAME_MIN_DIST = 0.20f  // 取景框至少要有鏡頭畫面寬度的這個比例，太小不算
         const val LOST_TIMEOUT = 0.5
 
-        // 手機上每次捲動是一次「滑動」，門檻比電腦版大很多，不然會一直觸發
         const val DEBUG_LABEL = true      // 左上角顯示目前判斷到的手勢；調好之後可改成 false
 
+        // 手機上每次捲動是一次「滑動」，門檻比電腦版大很多，不然會一直觸發
         const val SCROLL_DEADZONE = 0.05f
         const val SCROLL_GAIN = 2.0f
     }
@@ -91,13 +105,22 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
     private var lastChrome = -100.0
 
     private var thumbSince: Double? = null
-    private var lastBack = -100.0
+    private var lastLike = -100.0
+
+    // 食指左右甩 → 返回
+    private val swipeHist = ArrayDeque<Triple<Double, Float, Float>>()
+    private var lastSwipe = -100.0
 
     private var lastLabel = ""
 
-    private var shotSince: Double? = null
-    private var shotFired = false
+    // 雙手 L 取景框：撐住＝截圖，合起來＝開相機
+    private var frameSince: Double? = null
+    private var frameD0 = 0f        // 這次取景框出現以來，兩手轉角距離的最大值
+    private var frameLastDist = 0f
+    private var frameLastL = 0.0
+    private var frameDone = false   // 這次取景框已經觸發過（截圖或相機），不重複
     private var lastShot = -100.0
+    private var lastCamera = -100.0
 
     private fun setArmed(v: Boolean, now: Double) {
         armed = v
@@ -115,6 +138,7 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
         pinchState = null
         scrollPrevY = null
         scrollAcc = 0f
+        swipeHist.clear()
         if (cursorVisible) {
             cursorVisible = false
             out.cursor(tgtX, tgtY, false, false)
@@ -145,13 +169,12 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
         // ---- 全域切換（通知列按鈕）----
         if (toggleReq.getAndSet(false)) setArmed(!armed, now)
 
-        // ---- 比讚 → 返回 ----
+        // ---- 比讚 → 噴出 👍 彈幕 ----
         if (gesture == Gesture.THUMBS_UP && armed) {
             val s = thumbSince ?: now.also { thumbSince = it }
-            if (now - s >= BACK_HOLD && now - lastBack >= BACK_COOLDOWN) {
-                lastBack = now
-                out.back()
-                out.hud(true, "返回")
+            if (now - s >= LIKE_HOLD && now - lastLike >= LIKE_COOLDOWN) {
+                lastLike = now
+                out.burst()
             }
         } else thumbSince = null
 
@@ -169,19 +192,49 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
             cSince = null; cFired = false
         }
 
-        // ---- 雙手 L 形取景框 → 截圖 ----
+        // ---- 雙手 L 形取景框：撐住 1 秒＝截圖；1 秒內雙手合起來（咔嚓）＝開相機 ----
         val bothL = hands.size == 2 && hands.all { isLShape(it) }
-        if (bothL && armed) {
-            val s = shotSince ?: now.also { shotSince = it }
-            if (now - s >= SHOT_HOLD && !shotFired && now - lastShot >= SHOT_COOLDOWN) {
-                shotFired = true
+        if (!armed) {
+            frameSince = null; frameDone = false
+        } else if (bothL) {
+            val c0 = frameCorner(hands[0])
+            val c1 = frameCorner(hands[1])
+            val d = hypot(c0.first - c1.first, c0.second - c1.second) / frameW
+            val since = frameSince ?: now.also { frameSince = it; frameD0 = d }
+            frameD0 = max(frameD0, d)
+            frameLastDist = d
+            frameLastL = now
+            val closed = frameD0 >= FRAME_MIN_DIST && d <= CAMERA_CLOSE_RATIO * frameD0
+            if (!frameDone && closed && now - since <= CAMERA_WINDOW && now - lastCamera >= CAMERA_COOLDOWN) {
+                frameDone = true
+                lastCamera = now
+                releaseAll()
+                out.openCamera()
+                out.hud(true, "相機")
+            } else if (!frameDone && now - since >= SHOT_HOLD && now - lastShot >= SHOT_COOLDOWN) {
+                frameDone = true
                 lastShot = now
                 releaseAll()
                 out.screenshot()
                 out.hud(true, "截圖")
             }
-        } else {
-            shotSince = null; shotFired = false
+        } else if (frameSince != null) {
+            val since = frameSince!!
+            // 雙手貼得很近時，辨識常會跟丟：剛跟丟、而且最後一次距離已經明顯縮小，也算「咔嚓」
+            if (!frameDone && now - frameLastL <= 0.35 && frameD0 >= FRAME_MIN_DIST &&
+                frameLastDist <= 0.75f * frameD0 && frameLastL - since <= CAMERA_WINDOW &&
+                now - lastCamera >= CAMERA_COOLDOWN
+            ) {
+                frameDone = true
+                lastCamera = now
+                releaseAll()
+                out.openCamera()
+                out.hud(true, "相機")
+            }
+            if (now - frameLastL > 0.35) {  // 取景框消失夠久了，下次重新計
+                frameSince = null
+                frameDone = false
+            }
         }
 
         // ---- 雙手手勢計時 ----
@@ -243,6 +296,29 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
                 if (dragging) out.dragMove(tgtX, tgtY)
             }
             out.cursor(tgtX, tgtY, cursorVisible, gesture == Gesture.PINCH)
+
+            // 食指左右快速甩動（0.5 秒內橫向移動夠遠）→ 返回
+            if (gesture == Gesture.POINT) {
+                val sx = lm[5].x / frameW
+                val sy = lm[5].y / frameW  // 用同一個單位（畫面寬度）比橫向與縱向
+                swipeHist.addLast(Triple(now, sx, sy))
+                while (swipeHist.size > 1 && now - swipeHist.first().first > SWIPE_WINDOW) {
+                    swipeHist.removeFirst()
+                }
+                val first = swipeHist.first()
+                val dx = sx - first.second
+                val dy = sy - first.third
+                if (abs(dx) >= SWIPE_DIST && abs(dy) <= 0.6f * abs(dx) &&
+                    now - lastSwipe >= SWIPE_COOLDOWN
+                ) {
+                    lastSwipe = now
+                    swipeHist.clear()
+                    out.back()
+                    out.hud(true, "返回")
+                }
+            } else {
+                swipeHist.clear()
+            }
 
             // 左鍵：快速捏合＝點擊，捏住不放＝拖曳
             if (gesture == Gesture.PINCH) {
