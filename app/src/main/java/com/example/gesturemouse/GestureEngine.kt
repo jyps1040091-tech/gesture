@@ -18,6 +18,8 @@ interface GestureOutput {
     fun screenshot()
     fun openChrome()
     fun hud(armed: Boolean, text: String)
+    /** 左上角的即時手勢標籤（除錯用）；空字串＝隱藏。 */
+    fun label(text: String)
 }
 
 /**
@@ -46,6 +48,8 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
         const val LOST_TIMEOUT = 0.5
 
         // 手機上每次捲動是一次「滑動」，門檻比電腦版大很多，不然會一直觸發
+        const val DEBUG_LABEL = true      // 左上角顯示目前判斷到的手勢；調好之後可改成 false
+
         const val SCROLL_DEADZONE = 0.05f
         const val SCROLL_GAIN = 2.0f
     }
@@ -88,6 +92,8 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
 
     private var thumbSince: Double? = null
     private var lastBack = -100.0
+
+    private var lastLabel = ""
 
     private var shotSince: Double? = null
     private var shotFired = false
@@ -197,6 +203,20 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
             }
         }
 
+        // ---- 除錯標籤：左上角即時顯示目前判斷到的手勢（只在內容改變時才送出）----
+        if (DEBUG_LABEL) {
+            val lab = when {
+                hands.isEmpty() -> "沒看到手"
+                hands.size >= 2 -> "雙手：" + (kind?.name ?: "-")
+                else -> gesture.name
+            }
+            val full = (if (armed) "● " else "○ ") + lab
+            if (full != lastLabel) {
+                lastLabel = full
+                out.label(full)
+            }
+        }
+
         // ---- 操作邏輯 ----
         if (!armed || (gesture == Gesture.NONE && now - lastSeen > LOST_TIMEOUT)) {
             releaseAll()
@@ -209,10 +229,17 @@ class GestureEngine(private val sw: Int, private val sh: Int, private val out: G
             val curX = fx.filter((px * (sw - 1)).toDouble(), now).toFloat()
             val curY = fy.filter((py * (sh - 1)).toDouble(), now).toFloat()
 
-            // 游標移動：食指伸出，或拖曳中
-            if (gesture == Gesture.POINT || (gesture == Gesture.PINCH && dragging)) {
+            // 游標：只要有手被追蹤就一直顯示；剛出現時直接對準手的位置
+            if (!cursorVisible) {
                 tgtX = curX; tgtY = curY
                 cursorVisible = true
+            }
+            // 游標移動：食指伸出、其他沒有特殊意義的手形，或拖曳中
+            // （捏合 / 長按 / 捲動期間凍結位置，點擊才會點在捏下去的地方）
+            if (gesture == Gesture.POINT || gesture == Gesture.OTHER ||
+                (gesture == Gesture.PINCH && dragging)
+            ) {
+                tgtX = curX; tgtY = curY
                 if (dragging) out.dragMove(tgtX, tgtY)
             }
             out.cursor(tgtX, tgtY, cursorVisible, gesture == Gesture.PINCH)

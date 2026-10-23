@@ -206,6 +206,7 @@ class CameraService : LifecycleService() {
         try { provider?.unbindAll() } catch (_: Exception) {}
         engine?.release()
         GestureAccessibilityService.instance?.cursor(0f, 0f, false, false)
+        GestureAccessibilityService.instance?.label("")
         executor.shutdown()
         try { landmarker?.close() } catch (_: Exception) {}
         super.onDestroy()

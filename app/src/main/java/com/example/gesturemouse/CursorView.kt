@@ -30,6 +30,7 @@ class CursorView(context: Context) : View(context) {
     private var hasPos = false
 
     private var armed = false
+    private var debugLabel = ""
     private var hudText = ""
     private var hudUntil = 0L
 
@@ -96,6 +97,11 @@ class CursorView(context: Context) : View(context) {
         invalidate()
     }
 
+    fun setLabel(s: String) {
+        debugLabel = s
+        invalidate()
+    }
+
     fun showHud(isArmed: Boolean, message: String) {
         armed = isArmed
         hudText = message
@@ -117,6 +123,14 @@ class CursorView(context: Context) : View(context) {
         // 右上角小圓點：啟動中＝綠，停用＝灰
         fill.color = if (armed) 0xFF34C759.toInt() else 0x88999999.toInt()
         canvas.drawCircle(width - 14f * dp, 14f * dp + 20f * dp, 5f * dp, fill)
+
+        if (debugLabel.isNotEmpty()) {
+            val lp = Paint(text).apply { textAlign = Paint.Align.LEFT; textSize = 14f * dp }
+            val w = lp.measureText(debugLabel) + 20f * dp
+            val r = RectF(10f * dp, 40f * dp, 10f * dp + w, 40f * dp + 28f * dp)
+            canvas.drawRoundRect(r, 14f * dp, 14f * dp, pill)
+            canvas.drawText(debugLabel, r.left + 10f * dp, r.centerY() + 5f * dp, lp)
+        }
 
         if (hudText.isNotEmpty() && SystemClock.uptimeMillis() < hudUntil) {
             val w = text.measureText(hudText) + 40f * dp

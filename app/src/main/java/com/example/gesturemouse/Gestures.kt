@@ -91,6 +91,9 @@ fun isCShape(lm: Array<Lm>): Boolean {
         bendDeg(lm, it[0], it[1], it[2], it[3]) in Cfg.C_BEND_MIN..Cfg.C_BEND_MAX
     }
     if (bent < 3) return false
+    // 食指也必須是彎的；否則「食指伸直、其餘三指彎曲」的指向姿勢會被誤判成 C
+    val idx = fingers[0]
+    if (bendDeg(lm, idx[0], idx[1], idx[2], idx[3]) !in Cfg.C_BEND_MIN..Cfg.C_BEND_MAX) return false
     val gap = dist(lm[4], lm[8]) / hs
     if (gap < 0.45f || gap > 1.4f) return false
     return dist(lm[4], lm[17]) > dist(lm[3], lm[17])

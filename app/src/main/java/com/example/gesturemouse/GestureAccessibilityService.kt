@@ -270,6 +270,10 @@ class GestureAccessibilityService : AccessibilityService(), GestureOutput {
         }
     }
 
+    override fun label(text: String) {
+        main.post { cursorView?.setLabel(text) }
+    }
+
     override fun hud(armed: Boolean, text: String) {
         main.post { cursorView?.showHud(armed, text) }
     }
